@@ -1,0 +1,99 @@
+name: Build FKZRom for y2s
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [y2s]
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      - name: Free disk space (1/3)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          sudo docker builder prune -a
+      - name: Free disk space (2/3)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+      - name: Free disk space (3/3)
+        uses: rokibhasansagar/slimhub_actions@main
+        with:
+          retain: 'compiler_cmake'
+      - name: Set up build environment
+        run: |
+          sudo apt update
+          DEBIAN_FRONTEND=noninteractive sudo apt install -yq \
+            p7zip-full jq attr ccache clang ffmpeg golang \
+            libbrotli-dev libgtest-dev libprotobuf-dev libunwind-dev libpcre2-dev \
+            libzstd-dev linux-modules-extra-$(uname -r) lld protobuf-compiler webp \
+            curl xxd patchelf flex bison libarchive-tools build-essential pcre2-utils
+          sudo modprobe erofs f2fs
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo -n "${{ secrets.PLATFORM_KEY_PK8 }}" | base64 --decode > security/extremerom_platform.pk8
+          echo -n "${{ secrets.PLATFORM_KEY_PEM }}" | base64 --decode > security/extremerom_platform.x509.pem
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'gradle'
+      - name: Apply FKZRom Branding
+        run: |
+          # Schimba numele ROM
+          find target/y2s -name "*.sh" -o -name "*.prop" | xargs sed -i 's/ExtremeROM/FKZRom/g' 2>/dev/null || true
+          find target/y2s -name "*.sh" -o -name "*.prop" | xargs sed -i 's/Extreme ROM/FKZRom/g' 2>/dev/null || true
+          # Schimba build number
+          find target/y2s -type f | xargs grep -rl "ro.build.display.id\|ro.build.id" 2>/dev/null | while read f; do
+            sed -i 's/ro.build.display.id=.*/ro.build.display.id=FKZ-ROM/g' "$f"
+          done
+      - name: Build dependencies
+        run: |
+          source ./buildenv.sh ${{ matrix.target }}
+          ./scripts/build_dependencies.sh
+      - name: Download source firmware
+        run: |
+          source ./buildenv.sh ${{ matrix.target }}
+          ./scripts/download_fw.sh --force --ignore-target
+      - name: Extract source firmware
+        run: |
+          source ./buildenv.sh ${{ matrix.target }}
+          ./scripts/extract_fw.sh --force --ignore-source
+      - name: Download target firmware
+        run: |
+          source ./buildenv.sh ${{ matrix.target }}
+          ./scripts/download_fw.sh --force --ignore-source
+      - name: Extract target firmware
+        run: |
+          source ./buildenv.sh ${{ matrix.target }}
+          ./scripts/extract_fw.sh --force --ignore-source
+      - name: Build ROM
+        run: |
+          source ./buildenv.sh ${{ matrix.target }}
+          ./scripts/make_rom.sh --force
+      - name: Set Date Variables
+        run: |
+          echo "DATE_SHORT=$(date +%Y%m%d)" >> $GITHUB_OUTPUT
+          echo "DATE_TAG=$(date +%Y%m%d%H%M%S)" >> $GITHUB_OUTPUT
+        id: date
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/*.zip
+          name: FKZRom-y2s-${{ steps.date.outputs.DATE_SHORT }}
+          tag_name: ${{ steps.date.outputs.DATE_TAG }}
+          body: |
+            FKZRom by FranckkZeul
+            Device: Samsung Galaxy S20+ (y2s)
+            Based on: ExtremeROM
+            Manifest: OneUI 7
+        env:
+          GITHUB_TOKEN: ${{ secrets.TOKEN }}
